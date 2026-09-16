@@ -140,7 +140,8 @@ def _benchmark_worker(
     error_queue: multiprocessing.Queue,
     timeout_per_benchmark: float = 3600.0,
     micro_metric_logger_max_records: Optional[int] = None,
-    micro_metric_logger_sampling_factor: float = 1.0
+    micro_metric_logger_sampling_factor: float = 1.0,
+    micro_metric_enabled_metrics: Optional[List[str]] = None,
 ) -> None:
     """Worker function to execute benchmarks with dynamic GPU allocation.
     
@@ -226,7 +227,8 @@ def _benchmark_worker(
                         model_name=stub.model_name,
                         sparse_attention_config=stub.sparse_attention_config,
                         model_kwargs=stub.adapter_config.model_kwargs,
-                        tokenizer_kwargs=stub.adapter_config.tokenizer_kwargs
+                        tokenizer_kwargs=stub.adapter_config.tokenizer_kwargs,
+                        device=f"cuda:{current_gpu_id}",
                     )
                     
                     # Create benchmark instance
@@ -238,10 +240,15 @@ def _benchmark_worker(
                     
                     # Execute benchmark
                     logger.info(f"Worker {worker_id}: Executing benchmark {stub.benchmark_name} on GPU {current_gpu_id}")
+                    enabled_metrics: List[str] = (
+                        micro_metric_enabled_metrics
+                        if micro_metric_enabled_metrics is not None
+                        else ["research_attention_density", "research_attention_output_error"]
+                    )
                     metric_logger = MicroMetricLogger()
                     metric_logger.configure_logging(
                         log_path=stub.result_dir, 
-                        enabled_metrics=["research_attention_density", "research_attention_output_error"],
+                        enabled_metrics=enabled_metrics,
                         max_records=micro_metric_logger_max_records,
                         sampling_factor=micro_metric_logger_sampling_factor
                     )
@@ -398,6 +405,7 @@ class BenchmarkExecutor:
         verbose: bool = True,
         micro_metric_logger_max_records: Optional[int] = None,  # Maximum number of metric events to log
         micro_metric_logger_sampling_factor: float = 1.0,  # Probability of logging each metric event (0.0-1.0)
+        micro_metric_enabled_metrics: Optional[List[str]] = None,
     ):
         """Initialize the BenchmarkExecutor.
         
@@ -412,6 +420,8 @@ class BenchmarkExecutor:
             verbose: Whether to enable verbose logging
             micro_metric_logger_max_records: Maximum number of metric events to log (None for unlimited)
             micro_metric_logger_sampling_factor: Probability of logging each metric event (0.0-1.0)
+            micro_metric_enabled_metrics: Micro metrics to enable in workers. None keeps the
+                default density and output-error metrics; pass [] to disable them.
             
         Raises:
             ValueError: If configuration parameters are invalid
@@ -430,6 +440,7 @@ class BenchmarkExecutor:
         # Metric logging configuration
         self.micro_metric_logger_max_records = micro_metric_logger_max_records
         self.micro_metric_logger_sampling_factor = max(0.0, min(1.0, micro_metric_logger_sampling_factor))  # Clamp to [0.0, 1.0]
+        self.micro_metric_enabled_metrics = micro_metric_enabled_metrics
         
         # Initialize logging
         self._setup_logging()
@@ -666,7 +677,8 @@ class BenchmarkExecutor:
                         error_queue, 
                         self.timeout_per_benchmark, 
                         self.micro_metric_logger_max_records, 
-                        self.micro_metric_logger_sampling_factor
+                        self.micro_metric_logger_sampling_factor,
+                        self.micro_metric_enabled_metrics,
                         ),
                 name=f"benchmark_worker_{i}"
             )
