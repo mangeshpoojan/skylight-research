@@ -32,6 +32,7 @@ class ModelAdapterHF(ModelAdapter):
         tokenizer_kwargs: Optional[Dict[str, Any]] = None,
         device: Optional[str] = None,
         hybrid: Optional[bool] = None,
+        revision: Optional[str] = None,
         **kwargs: Any,
     ) -> None:
         """Initialize HuggingFace adapter.
@@ -42,12 +43,23 @@ class ModelAdapterHF(ModelAdapter):
             model_kwargs: Additional keyword arguments for model creation
             device: Device to run the model on TODO: support dynamic and multipledevice placement
             tokenizer_kwargs: Additional keyword arguments for tokenizer creation
+            revision: Optional HuggingFace revision (branch, tag or commit sha) to pin both
+                the model weights and the tokenizer to, e.g. ``"stage1-step10000"``. It is
+                merged into ``model_kwargs``/``tokenizer_kwargs``, which makes it part of the
+                ModelServer cache key so that two revisions of the same model name do not
+                collide on a single cached instance. An explicit ``revision`` already present
+                in either dict takes precedence.
         """
         super().__init__(model_name, sparse_attention_config, **kwargs)
         self._registered_attention_name: Optional[str] = None
         self._custom_attention_fn: Optional[Callable] = None
-        self.model_kwargs: Dict[str, Any] = model_kwargs or {}
-        self.tokenizer_kwargs: Dict[str, Any] = tokenizer_kwargs or {}
+        self.model_kwargs: Dict[str, Any] = dict(model_kwargs or {})
+        self.tokenizer_kwargs: Dict[str, Any] = dict(tokenizer_kwargs or {})
+
+        self.revision: Optional[str] = revision
+        if revision is not None:
+            self.model_kwargs.setdefault("revision", revision)
+            self.tokenizer_kwargs.setdefault("revision", revision)
 
         raw_registry_path: Any = kwargs.get("model_registry_path", "")
         self.model_registry_path: str = (
@@ -141,7 +153,17 @@ class ModelAdapterHF(ModelAdapter):
             context, questions, answer_prefix
         )
 
-        context_tokens = self.tokenizer.encode(context, return_tensors="pt")
+        # `_preprocess_context_and_questions` may have already applied the chat
+        # template, which emits the model's BOS itself. Several fast tokenizers
+        # (Llama-3.x, Gemma) carry a `TemplateProcessing` post-processor that
+        # prepends BOS on *every* `encode()` regardless of `add_bos_token`, so
+        # letting `add_special_tokens` default to True duplicates it here and
+        # splices a third one in mid-sequence at the question boundary below.
+        context_tokens = self.tokenizer.encode(
+            context,
+            return_tensors="pt",
+            add_special_tokens=self.tokenizer.chat_template is None,
+        )
         context_tokens = context_tokens[
             :, :max_context_length
         ]  # truncate context to max_context_length
@@ -159,7 +181,11 @@ class ModelAdapterHF(ModelAdapter):
             for question in questions:
                 sparse_meta_data: Dict[str, Any] = {}
 
-                question_tokens = self.tokenizer.encode(question, return_tensors="pt")
+                # The question continues the already-BOS-prefixed context; any
+                # special token added here lands mid-sequence.
+                question_tokens = self.tokenizer.encode(
+                    question, return_tensors="pt", add_special_tokens=False
+                )
                 if input_device is not None:
                     question_tokens = question_tokens.to(input_device)
 

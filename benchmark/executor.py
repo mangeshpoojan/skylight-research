@@ -229,6 +229,7 @@ def _benchmark_worker(
                         model_kwargs=stub.adapter_config.model_kwargs,
                         tokenizer_kwargs=stub.adapter_config.tokenizer_kwargs,
                         device=f"cuda:{current_gpu_id}",
+                        revision=stub.adapter_config.revision,
                     )
                     
                     # Create benchmark instance
