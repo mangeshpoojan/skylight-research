@@ -159,21 +159,20 @@ class ModelAdapterHF(ModelAdapter):
         # prepends BOS on *every* `encode()` regardless of `add_bos_token`, so
         # letting `add_special_tokens` default to True duplicates it here and
         # splices a third one in mid-sequence at the question boundary below.
-        context_tokens = self.tokenizer.encode(
+        context_tokens_full = self.tokenizer.encode(
             context,
             return_tensors="pt",
             add_special_tokens=self.tokenizer.chat_template is None,
         )
-        context_tokens = context_tokens[
-            :, :max_context_length
-        ]  # truncate context to max_context_length
+        truncate_from_middle: bool = bool(
+            request_kwargs.get("truncate_from_middle", False)
+        )
 
         input_device = (
             self.model.device if hasattr(self.model, "device") else self.device
         )
         if input_device is not None:
-            context_tokens = context_tokens.to(input_device)
-        print(f"Context tokens: {context_tokens.shape}")
+            context_tokens_full = context_tokens_full.to(input_device)
         responses: List[str] = []
 
         self.model.eval()
@@ -189,11 +188,31 @@ class ModelAdapterHF(ModelAdapter):
                 if input_device is not None:
                     question_tokens = question_tokens.to(input_device)
 
+                # Official LongBench (THUDM) keeps the start and end of over-long
+                # prompts ("Lost in the Middle"). Default remains prefix truncation.
+                context_budget: int = max(
+                    1, int(max_context_length) - int(question_tokens.shape[1])
+                )
+                if truncate_from_middle and context_tokens_full.shape[1] > context_budget:
+                    half: int = context_budget // 2
+                    context_tokens = torch.cat(
+                        [
+                            context_tokens_full[:, :half],
+                            context_tokens_full[:, -half:],
+                        ],
+                        dim=1,
+                    )
+                else:
+                    context_tokens = context_tokens_full[:, :context_budget]
+                print(f"Context tokens: {context_tokens.shape}")
+
                 if self._sparse_attention_available:
+                    # Prefill only needs the KV cache; skip materializing 32K×vocab logits.
                     context_outputs = self.model(
                         context_tokens,
                         past_key_values=None,
                         use_cache=True,
+                        logits_to_keep=1,
                         sparse_meta_data=sparse_meta_data,
                     )
 
@@ -210,6 +229,7 @@ class ModelAdapterHF(ModelAdapter):
                         context_tokens,
                         past_key_values=None,
                         use_cache=True,
+                        logits_to_keep=1,
                     )
 
                     response_text = self._generate_response(

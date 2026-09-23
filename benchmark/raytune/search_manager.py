@@ -40,13 +40,21 @@ class ConfigSearchManager:
     force_search: bool, 
     generation_kwargs: Dict[str, any], 
     request_kwargs: Dict[str, any],
-    ray_results_dir: str) -> None:
+    ray_results_dir: str,
+    hybrid: bool = False,
+    extra_model_kwargs: Optional[Dict] = None,
+    use_memory_efficient_kmeans: bool = False) -> None:
         """Initialize the search manager with configuration.
         
         Args:
-            base_config: Dictionary containing search configuration including:
-                - optimal_configs_dir: Directory to save optimal configs
-                - force_search: Whether to force re-search even if configs exist
+            optimal_configs_dir: Directory to save optimal configs.
+            force_search: Whether to force re-search even if configs exist.
+            generation_kwargs: Generation kwargs for each trial.
+            request_kwargs: Request kwargs for each trial.
+            ray_results_dir: Ray Tune storage path.
+            hybrid: Forwarded to ModelAdapterHF (GatedDeltaNet seq_len=1 decode).
+            extra_model_kwargs: Extra HuggingFace model kwargs.
+            use_memory_efficient_kmeans: Patch PQ k-means for long context.
         """
         # Add timestamp to the results directory
         if USE_TIMESTAMP_FOR_RESULTS_DIR:
@@ -60,6 +68,9 @@ class ConfigSearchManager:
         self.generation_kwargs: Dict[str, any] = generation_kwargs
         self.request_kwargs: Dict[str, any] = request_kwargs
         self.ray_results_dir: Path = ray_results_dir
+        self.hybrid: bool = hybrid
+        self.extra_model_kwargs: Optional[Dict] = extra_model_kwargs
+        self.use_memory_efficient_kmeans: bool = use_memory_efficient_kmeans
         print(f"Saving optimal configs to: {self.results_dir}")
         
     def search_optimal_config(
@@ -130,7 +141,10 @@ class ConfigSearchManager:
                 runner: BenchmarkHelper = BenchmarkHelper(
                     base_result_dir=self.results_dir,
                     generation_kwargs=self.generation_kwargs,
-                    request_kwargs=self.request_kwargs
+                    request_kwargs=self.request_kwargs,
+                    hybrid=self.hybrid,
+                    extra_model_kwargs=self.extra_model_kwargs,
+                    use_memory_efficient_kmeans=self.use_memory_efficient_kmeans,
                 )
                 attention_config = optimizer.create_config_from_params(trial_config)
                 score: float

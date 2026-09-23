@@ -142,9 +142,13 @@ def serialize_sparse_config(config: Optional[Any]) -> Optional[Dict]:
                     masker_dict["params"][attr] = value
         masker_configs.append(masker_dict)
     
+    apply_to_layer_types = getattr(config, "apply_to_layer_types", None)
     return {
         "type": "ResearchAttentionConfig",
-        "masker_configs": masker_configs
+        "masker_configs": masker_configs,
+        "apply_to_layer_types": (
+            list(apply_to_layer_types) if apply_to_layer_types is not None else None
+        ),
     }
 
 
@@ -181,4 +185,11 @@ def deserialize_sparse_config(data: Optional[Dict]) -> Optional[Any]:
     
     # Import ResearchAttentionConfig here to avoid circular imports
     from sparse_attention_hub.sparse_attention.research_attention import ResearchAttentionConfig
-    return ResearchAttentionConfig(masker_configs=masker_configs) if masker_configs else None
+    if not masker_configs:
+        return None
+    apply_raw = data.get("apply_to_layer_types")
+    apply_to_layer_types = tuple(apply_raw) if apply_raw else None
+    return ResearchAttentionConfig(
+        masker_configs=masker_configs,
+        apply_to_layer_types=apply_to_layer_types,
+    )

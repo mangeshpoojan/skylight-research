@@ -78,6 +78,11 @@ class CompositeConfigOptimizer(SparseConfigOptimizer):
             new_config.validity_constraint = self.research_attention_config.validity_constraint
         if hasattr(self.research_attention_config, 'objective'):
             new_config.objective = self.research_attention_config.objective
+        apply_to_layer_types = getattr(
+            self.research_attention_config, "apply_to_layer_types", None
+        )
+        if apply_to_layer_types is not None:
+            new_config.apply_to_layer_types = apply_to_layer_types
         return new_config
 
 def create_optimizer(research_attention_config: Optional[ResearchAttentionConfig] = None) -> SparseConfigOptimizer:

@@ -6,6 +6,16 @@ import pandas as pd
 from ..base import Benchmark
 from ..benchmark_registry import register_benchmark
 from .calculate_metrics import calculate_metrics, calculate_metrics_e
+from .official_v1 import (
+    DATASET_TO_MAX_NEW_TOKENS,
+    OFFICIAL_V1_TASKS,
+    format_official_sample,
+    iter_official_rows,
+)
+
+# Official LongBench v1 lives on THUDM/LongBench. The class attribute below is
+# kept for LongBench-E rows and for existing unit tests.
+OFFICIAL_V1_DATASET_ID: str = "THUDM/LongBench"
 
 
 @register_benchmark("longbench")
@@ -50,33 +60,67 @@ class LongBench(Benchmark):
 
     def _load_datasets(self) -> pd.DataFrame:
         """Load LongBench datasets by individual configs.
-        
-        LongBench requires loading each subset as a separate config.
-        
+
+        Standard v1 tasks (the original 21, not LongBench v2) are loaded from
+        the official THUDM/LongBench jsonl files and formatted with
+        ``dataset2prompt`` / ``dataset2maxlen``. Extended ``*_e`` tasks use the
+        same official zip when present.
+
         Returns:
             Combined pandas DataFrame with all samples from subsets_to_run.
         """
         print(f"Loading LongBench datasets: {self.subsets_to_run}")
-        dfs = []
-        
+        dfs: List[pd.DataFrame] = []
+
         for subset in self.subsets_to_run:
             try:
                 from datasets import load_dataset
-                subset_dataset = load_dataset(self.huggingface_dataset_id, subset, split="test")
-                subset_df = subset_dataset.to_pandas()
-                subset_df["task"] = subset  # Ensure task column exists
+
+                if subset in OFFICIAL_V1_TASKS or (
+                    subset.endswith("_e") and subset.removesuffix("_e") in OFFICIAL_V1_TASKS
+                ):
+                    prompt_task: str = subset.removesuffix("_e")
+                    rows: List[Dict[str, Any]] = []
+                    for row in iter_official_rows(subset):
+                        context: str
+                        question: str
+                        prefix: str
+                        context, question, prefix = format_official_sample(
+                            prompt_task, row
+                        )
+                        rows.append(
+                            {
+                                "context": context,
+                                "question": question,
+                                "answer_prefix": prefix,
+                                "answers": row["answers"],
+                                "all_classes": row.get("all_classes"),
+                                "length": row.get("length"),
+                                "task": subset,
+                                "max_new_tokens": DATASET_TO_MAX_NEW_TOKENS[prompt_task],
+                            }
+                        )
+                    subset_df: pd.DataFrame = pd.DataFrame(rows)
+                    print(
+                        f"  ✓ Loaded {len(subset_df)} official v1 samples from "
+                        f"THUDM/LongBench/{subset}.jsonl"
+                    )
+                else:
+                    subset_dataset = load_dataset(
+                        self.huggingface_dataset_id, subset, split="test"
+                    )
+                    subset_df = subset_dataset.to_pandas()
+                    subset_df["task"] = subset
+                    print(f"  ✓ Loaded {len(subset_df)} samples from {subset}")
                 dfs.append(subset_df)
-                print(f"  ✓ Loaded {len(subset_df)} samples from {subset}")
             except Exception as subset_error:
                 print(f"  ❌ Failed to load {subset}: {str(subset_error)}")
                 continue
-        
+
         if not dfs:
             raise Exception("No LongBench subsets could be loaded successfully")
-        
-        # Combine all subset DataFrames
-        import pandas as pd
-        combined_df = pd.concat(dfs, ignore_index=True)
+
+        combined_df: pd.DataFrame = pd.concat(dfs, ignore_index=True)
         print(f"Combined {len(combined_df)} total samples from {len(dfs)} subsets")
         return combined_df
 

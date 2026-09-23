@@ -14,6 +14,7 @@ from .oracle_topp import OracleTopPConfigBuilder  # noqa: E402, F401
 from .hashattention_topk import HashAttentionTopKConfigBuilder  # noqa: E402, F401
 from .magicpig import MagicPigConfigBuilder  # noqa: E402, F401
 from .pqcache import PQCacheTopKConfigBuilder  # noqa: E402, F401
+from .pq_importance import PQImportanceConfigBuilder  # noqa: E402, F401
 from .quest_top_k import QuestTopKConfigBuilder  # noqa: E402, F401
 from .random_sampling import RandomSamplingConfigBuilder  # noqa: E402, F401
 from .socket_topk import SocketTopKConfigBuilder  # noqa: E402, F401
@@ -30,6 +31,7 @@ __all__ = [
     "HashAttentionTopKConfigBuilder",
     "MagicPigConfigBuilder",
     "PQCacheTopKConfigBuilder",
+    "PQImportanceConfigBuilder",
     "QuestTopKConfigBuilder",
     "RandomSamplingConfigBuilder",
     "SocketTopKConfigBuilder",

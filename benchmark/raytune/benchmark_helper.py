@@ -6,7 +6,7 @@ import math
 import os
 import sys
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 # Path setup
 current_dir = Path(__file__).parent
@@ -35,25 +35,33 @@ class BenchmarkHelper:
     def __init__(self, 
             base_result_dir: Path,
             generation_kwargs: Dict[str, any],
-            request_kwargs: Dict[str, any]) -> None:
+            request_kwargs: Dict[str, any],
+            hybrid: bool = False,
+            extra_model_kwargs: Optional[Dict[str, Any]] = None,
+            use_memory_efficient_kmeans: bool = False) -> None:
         """Initialize the benchmark helper with configuration.
         
         Args:
-            config: Dictionary containing benchmark configuration including:
-                - search_result_dir: Base directory for search results
-                - search_max_new_tokens: Maximum new tokens for generation
-                - search_max_context_length: Maximum context length
-                - search_max_requests: Maximum requests per trial
-                - objective_function: Name of objective function to use
+            base_result_dir: Directory for per-trial result files.
+            generation_kwargs: Generation kwargs forwarded to the benchmark.
+            request_kwargs: Request kwargs forwarded to the benchmark.
+            hybrid: Enable token-by-token question consume (GatedDeltaNet).
+            extra_model_kwargs: Extra HuggingFace model kwargs (e.g. use_kernels).
+            use_memory_efficient_kmeans: Patch PQ k-means to avoid 32K OOMs.
         """
         self.base_result_dir: Path = base_result_dir
+        extra_model_kwargs = extra_model_kwargs or {}
+        model_kwargs: Dict[str, Any] = {"torch_dtype": torch.bfloat16}
+        model_kwargs.update(extra_model_kwargs)
         self.adapter_config: AdapterConfig = AdapterConfig(
             adapter_name="huggingface",
-            model_kwargs={"torch_dtype": torch.bfloat16},
+            model_kwargs=model_kwargs,
             tokenizer_kwargs={"padding_side": "left"},
         )
         self.generation_kwargs: Dict[str, any] = generation_kwargs
         self.request_kwargs: Dict[str, any] = request_kwargs
+        self.hybrid: bool = hybrid
+        self.use_memory_efficient_kmeans: bool = use_memory_efficient_kmeans
 
     def __call__(self, attention_config: any, task_name: str, model_name: str) -> Tuple[float, float, float]:
         """Run benchmark and return (score, density, error) tuple.
@@ -87,6 +95,12 @@ class BenchmarkHelper:
             if DRY_RUN:
                 return random.random(), random.random(), random.random()
 
+            if self.use_memory_efficient_kmeans:
+                from benchmark.scripts.pq_kmeans_patch import (
+                    install_memory_efficient_kmeans,
+                )
+                install_memory_efficient_kmeans()
+
             benchmark_name: str
             subset_name: str | None
             benchmark_name, subset_name = task_name.split("/", 1) if "/" in task_name else (task_name, None)
@@ -100,7 +114,9 @@ class BenchmarkHelper:
                 model_name=model_name,
                 sparse_attention_config=attention_config,
                 model_kwargs=self.adapter_config.model_kwargs,
-                tokenizer_kwargs=self.adapter_config.tokenizer_kwargs
+                tokenizer_kwargs=self.adapter_config.tokenizer_kwargs,
+                device="cuda:0",
+                hybrid=self.hybrid,
             )
             
             # Create benchmark instance
