@@ -5,29 +5,33 @@ Fidelity to https://github.com/google-deepmind/loft (sha 219f68e), measured:
 * METRICS are faithful -- scoring identical outputs through this module and through
   upstream's RagEvaluation / MultiValueRagEvaluation gives identical results.
 * DATA is a third-party mirror (`f20180301/loft-rag-*`), not LOFT's download.sh +
-  preprocess.py output, but it carries LOFT's own queries.  Verified against upstream's
-  evaluation/example_predictions/rag_nq/queries.jsonl: all 10 of those test qids appear
-  in the mirror's `test` split with identical gold answers, and none in `dev`.
-  `dev` and `test` share ONE corpus (dev[0].context == test[0].context for all ten
-  mirrors), and that corpus sits inside LOFT's own 32k budget measured LOFT's way
-  (len(text.split(" ")): 29.8k-30.2k <= 32000).  So `overall` does NOT pool two lengths.
-  The corpus is selected around the TEST queries, so dev golds are largely absent from
-  it -- qampari 1/50 and quest 0/23 gold strings occur verbatim, against test 281/301
-  and 117/117 -- which floors those dev scores at 0 for reasons of data, not model.
-  `test` is therefore both the LOFT-comparable split and the larger one (100 rows; 60
-  for qampari/quest at 32k) -- use `by_split["test"]`.
-* CONTEXT LENGTH: "32k" is Gemini-tokenized; these are 42-46k Llama tokens, so
-  max_context_length=32768 silently drops ~25-30% of the corpus.
-* GENERATION: upstream imposes NO output cap (VertexAIModel.infer sets only
-  temperature/top_p).  The mirror rows carry max_new_tokens=256, which base.py turns
-  into a ceiling no caller can raise.  With LOFT's chain-of-thought prompt restored
-  (prompt_includes_answer_prefix=False) outputs grew ~4x and 256 began truncating half
-  the sparse-attention rows before they reach "Final Answer" -- 231/470 rows at the cap
-  and 174 unparseable on oracle-top-k 32k, versus 54/49 dense.  `_load_datasets` now
-  drops the column so the caller's budget governs, matching upstream.
+  preprocess.py output.  Checked against the official rag/<ds>.zip files:
+  - `*_128k` IS LOFT: `test` (100 rows) is LOFT's 128k test split and `dev` (10) its
+    dev split, with identical gold answers, and context+question is byte-identical to
+    upstream's own prompt (same corpus, same order) for every test row.
+  - `*_32k` is NOT LOFT.  LOFT ships no 32k test split; the mirror pairs the first 100
+    (60 for qampari/quest) of LOFT's 128k test queries with its own corpus drawn from
+    the 128k one, ~1.5x LOFT's 32k length (29.8k-30.2k vs 18.3k-20.0k words), and puts
+    every few-shot and test gold document BEFORE all distractors (qampari: 325 golds, 2
+    distractors).  Treat 32k as an easier, position-biased variant, not a LOFT number.
+    Its `dev` is LOFT's dev queries, but their golds are often missing from this corpus
+    (nq 9, hotpotqa 6, musique 4, qampari 0, quest 0 of 10), so dev scores are floored
+    by the data, not the model.
+  `dev` and `test` share one context per subset.  `test` is the split to report --
+  use `by_split["test"]`; `overall` pools both splits for backward compatibility.
+* CONTEXT LENGTH: the mirror's 32k prompts are 42-46k Llama tokens (LOFT's own 32k
+  prompts are 28-29k), and truncation keeps the head, so max_context_length=32768
+  silently removes the 5-shot chain-of-thought block at the end of the context and
+  some gold documents.  Set max_context_length from your tokenizer.
+* GENERATION: greedy, matching upstream's temperature=0.  Upstream sets no
+  max_output_tokens, so gemini-1.5-pro's 8192-token output limit applies; the mirror's
+  max_new_tokens=256 is replaced with that (see `_load_datasets`).
 * PROMPT: upstream sends Gemini a raw prompt; this harness applies the model's chat
   template (unavoidable for an Instruct model), which inserts a system turn before the
   corpus and an assistant header after the query.  Deliberate, documented deviation.
+  For reasoning models (e.g. Qwen3.5) render the template with thinking disabled and
+  stop on the chat end-of-turn token: extract_prediction takes the FIRST bracketed line,
+  so an open reasoning block gets graded instead of the answer.
 """
 
 from typing import Any, Dict, List
@@ -88,6 +92,9 @@ class LoftRag(Benchmark):
     # "Final Answer: [...]".  Priming the prefix suppresses that CoT (+0.056 macro
     # subspan_em when removed).  Still used for scoring.
     prompt_includes_answer_prefix: bool = False
+    # Upstream's output budget: gemini-1.5-pro's 8192-token output limit (upstream sets no
+    # max_output_tokens of its own).
+    max_new_tokens: int = 8192
 
     def _load_datasets(self) -> pd.DataFrame:
         """Load LOFT RAG datasets from HuggingFace Hub.
@@ -148,12 +155,13 @@ class LoftRag(Benchmark):
         if missing_columns:
             raise ValueError(f"Missing required columns: {missing_columns}")
 
-        # Upstream imposes no output cap.  base.py takes min(caller, row), so leaving the
-        # mirror's max_new_tokens=256 in place makes it a ceiling no caller can raise --
-        # which truncates ~half the sparse-attention rows before they emit "Final Answer"
-        # once LOFT's chain-of-thought prompt is restored.  Drop it and let the caller's
-        # generation_kwargs govern, as upstream does.
-        combined_df = combined_df.drop(columns=["max_new_tokens"])
+        # base.py takes min(caller, row), so the mirror's max_new_tokens=256 was a ceiling
+        # no caller could raise -- it truncated ~half the sparse-attention rows before
+        # they emitted "Final Answer" once LOFT's chain-of-thought prompt was restored.
+        # Upstream sets no max_output_tokens, so gemini-1.5-pro's own 8192 output limit
+        # governs; use that as the row budget (callers may still pass a lower cap).
+        # Never drop the column: the adapter's decode loop stops only on EOS.
+        combined_df["max_new_tokens"] = self.max_new_tokens
 
         return combined_df
 
@@ -191,7 +199,7 @@ class LoftRag(Benchmark):
             # appends f1 solely in the unparseable branch, so it is 0.0 by construction
             # and is NOT a measurement.  Upstream has no cross-task macro; folding this
             # placeholder into ours would deflate overall.f1 (~x0.6) for no model reason.
-            if "f1" in metrics and "coverage" not in metrics:
+            if "f1" in metrics and "num_scored_for_coverage" not in metrics:
                 all_f1_scores.append(metrics["f1"])
             if "coverage" in metrics:
                 all_coverage_scores.append(metrics["coverage"])
@@ -263,7 +271,7 @@ class LoftRag(Benchmark):
                     vals = [
                         m[key]
                         for m in per_task.values()
-                        if key in m and not (key == "f1" and "coverage" in m)
+                        if key in m and not (key == "f1" and "num_scored_for_coverage" in m)
                     ]
                     if vals:
                         agg[key] = round(float(sum(vals) / len(vals)), 4)

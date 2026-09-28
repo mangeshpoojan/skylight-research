@@ -364,17 +364,6 @@ class TestGenerationKwargsIsolation:
         assert forwarded["temperature"] == 0.7
         assert forwarded["do_sample"] is True
 
-    def test_absent_max_new_tokens_column_defers_to_the_caller(self):
-        # A benchmark whose dataset specifies no per-row budget (LOFT, matching upstream,
-        # which imposes no output cap) must let the caller's value through unchanged
-        # rather than KeyError or silently cap.
-        seen: Dict[str, int] = {}
-        df = self._df_with_varying_max_new_tokens().drop(columns=["max_new_tokens"])
-        MockBenchmark()._process_all_requests(
-            self._recording_adapter(seen), df, {"max_new_tokens": 1024}, {}
-        )
-        assert set(seen.values()) == {1024}
-
 
 class TestPromptAnswerPrefixHook:
     """The prompt fix must be pinned at the call site, not only as a class constant."""

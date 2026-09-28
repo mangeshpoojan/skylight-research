@@ -3,11 +3,8 @@
 The metric functions themselves are a transcription of upstream
 (google-deepmind/loft, `evaluation/utils.py` + `evaluation/rag.py`); these tests pin the
 behaviour specific to this repo's wrapper, and in particular the per-split breakdown.
-BOTH splits carry LOFT's own queries against one shared corpus -- verified against
-upstream's evaluation/example_predictions/rag_nq/queries.jsonl, whose 10 test qids all
-appear in the mirror's `test` split with identical golds and none in `dev`.  The corpus is
-selected around the TEST queries, so dev golds are largely absent from it and dev scores
-are floored by the data; `test` is both the LOFT-comparable split and the larger one.
+Both splits share one context per subset; `test` is the split to report (see the
+loft_rag module docstring for which subsets are LOFT's own data).
 """
 
 import pandas as pd
@@ -162,12 +159,13 @@ class TestPerSplitReporting:
 
 
 class TestGenerationBudget:
-    """Upstream imposes no output cap; the dataset column must not become one."""
+    """The row budget is upstream's 8192, never the mirror's 256 nor unbounded."""
 
-    def test_load_datasets_drops_the_max_new_tokens_ceiling(self):
+    def test_load_datasets_replaces_the_256_ceiling_with_upstreams_budget(self):
         # base.py takes min(caller, row), so leaving the mirror's 256 in place makes it a
         # ceiling no caller can raise -- it truncated ~half the sparse rows before they
-        # emitted "Final Answer".  Deleting the drop() was previously invisible here.
+        # emitted "Final Answer".  Dropping the column instead would leave the adapter's
+        # EOS-only decode loop unbounded; the budget must be gemini-1.5-pro's 8192.
         from unittest.mock import patch
 
         frame = pd.DataFrame(
@@ -186,7 +184,7 @@ class TestGenerationBudget:
 
         with patch("datasets.load_dataset", return_value={"test": _Split()}):
             out = LoftRag(["nq_32k"])._load_datasets()
-        assert "max_new_tokens" not in out.columns
+        assert (out["max_new_tokens"] == 8192).all()
         for col in ("context", "question", "answers", "answer_prefix", "task"):
             assert col in out.columns
 
@@ -272,3 +270,15 @@ class TestCoverageDenominator:
         ]
         m = calculate_metrics(pd.DataFrame(rows))
         assert m["f1"] == 0.5  # unparseable row contributes 0.0, denominator 2
+
+    def test_all_unparseable_multi_value_task_stays_out_of_the_f1_macro(self):
+        # Multi-value f1 is upstream's unparseable-branch placeholder, not a measurement.
+        # When NO row parses, coverage is absent too, so the multi-value test must not
+        # key on coverage -- that folded the placeholder 0.0 into the f1 macro.
+        rows = [
+            _row("nq_32k", "test", "Final Answer: ['Paris']", ["Paris"]),
+            _row("quest_32k", "test", "no idea", ["a"]),
+        ]
+        out = LoftRag(["nq_32k", "quest_32k"]).post_run_evaluate(pd.DataFrame(rows))
+        assert out["overall"]["f1"] == 1.0
+        assert out["by_split"]["test"]["overall"]["f1"] == 1.0
