@@ -65,14 +65,12 @@ def kvq_title(mo):
 
 @app.cell
 def kvq_setup(ENV, Path, importlib, mo, subprocess, sys, torch):
-    # clone the repo and apply my patch (or use KVQ_BRANCH once the branch is pushed)
-    KVQ_DIR = Path(ENV.get("KVQ_DIR", "/marimo/notebooks"))        # patch, standalone notebooks, results/
+    # clone my fork (or update the existing clone) and use its kv-quantization branch
+    KVQ_DIR = Path(ENV.get("KVQ_DIR", "/marimo/notebooks"))        # results/ goes here
     RESULTS_DIR = KVQ_DIR / "results"
     REPO = Path(ENV.get("KVQ_REPO_DIR", Path.home() / "kvq-work" / "skylight-research"))
-    _REPO_URL = ENV.get("KVQ_REPO_URL", "https://github.com/skylight-org/skylight-research.git")
-    _BASE_COMMIT = "497da5b0182b1657ef0cfc4cf6b802425fe27f75"
-    _BRANCH = ENV.get("KVQ_BRANCH", "")
-    _PATCH = Path(ENV.get("KVQ_PATCH", KVQ_DIR / "kv_quantization_nvfp4.patch"))
+    _REPO_URL = ENV.get("KVQ_REPO_URL", "https://github.com/mangeshpoojan/skylight-research.git")
+    _BRANCH = ENV.get("KVQ_BRANCH", "kv-quantization")
 
     def _git(*args, cwd=REPO):
         done = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
@@ -83,16 +81,16 @@ def kvq_setup(ENV, Path, importlib, mo, subprocess, sys, torch):
     _log = []
     if not (REPO / ".git").exists():
         REPO.parent.mkdir(parents=True, exist_ok=True)
-        _git("clone", "--quiet", _REPO_URL, str(REPO), cwd=REPO.parent)
-        _git("checkout", "--quiet", _BRANCH or _BASE_COMMIT)
-        _log.append(f"cloned `{_REPO_URL}` at `{_BRANCH or _BASE_COMMIT[:7]}`")
-    if (REPO / "sparse_attention_hub" / "kv_quantization").exists():
-        _log.append("`kv_quantization` already present, reusing the clone")
-    elif _BRANCH:
-        raise RuntimeError(f"branch {_BRANCH!r} has no sparse_attention_hub/kv_quantization")
+        _git("clone", "--quiet", "--branch", _BRANCH, _REPO_URL, str(REPO), cwd=REPO.parent)
+        _log.append(f"cloned `{_REPO_URL}` branch `{_BRANCH}`")
     else:
-        _git("apply", "--whitespace=nowarn", str(_PATCH))
-        _log.append(f"applied `{_PATCH.name}`")
+        # an older clone may point somewhere else: switch it to the fork and pull the latest commit
+        _git("remote", "set-url", "origin", _REPO_URL)
+        _git("fetch", "--quiet", "origin", _BRANCH)
+        _git("checkout", "--quiet", "-B", _BRANCH, f"origin/{_BRANCH}")
+        _log.append(f"updated the existing clone to `{_REPO_URL}` branch `{_BRANCH}`")
+    if not (REPO / "sparse_attention_hub" / "kv_quantization").exists():
+        raise RuntimeError(f"branch {_BRANCH!r} of {_REPO_URL} has no sparse_attention_hub/kv_quantization")
     if str(REPO) not in sys.path:
         sys.path.insert(0, str(REPO))  # use the clone
 
@@ -101,7 +99,7 @@ def kvq_setup(ENV, Path, importlib, mo, subprocess, sys, torch):
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     mo.md(
         "**Setup**\n\n" + "\n".join(f"- {line}" for line in _log)
-        + f"\n- repo: `{REPO}` @ `{_git('rev-parse', '--short', 'HEAD')}`"
+        + f"\n- repo: `{REPO}` @ `{_git('rev-parse', '--short', 'HEAD')}` ({_git('log', '-1', '--format=%s')})"
         + f"\n- device: `{DEVICE}` ({torch.cuda.get_device_name(0) if DEVICE == 'cuda' else DEVICE}), torch `{torch.__version__}`"
         + f"\n- nvidia-modelopt: {'installed' if HAS_MODELOPT else 'missing (real nvfp4 parts are skipped)'}"
     )
